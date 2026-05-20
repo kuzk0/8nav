@@ -457,7 +457,7 @@ void MainWindow::callPhpScript()
 {
 
     if (QStandardPaths::findExecutable("php").isEmpty()) {
-        QMessageBox::critical(this, tr("Ошибка"), tr("PHP не установлен или не найден в PATH."));
+        QMessageBox::critical(this, tr("Error"), tr("PHP не установлен или не найден в PATH."));
         return;
     }
 
@@ -467,7 +467,7 @@ void MainWindow::callPhpScript()
     if (!QStandardPaths::findExecutable("xterm").isEmpty())
         terminal = "xterm";
     else {
-        QMessageBox::warning(this, tr("Ошибка"), tr("Не найден терминал (xterm)."));
+        QMessageBox::warning(this, tr("Error"), tr("Не найден терминал (xterm)."));
         return;
     }
 
@@ -475,7 +475,7 @@ void MainWindow::callPhpScript()
     // 1. Получаем выбранный элемент из первого списка (например, typeListWidget)
     QListWidgetItem *selectedItem = ui->typeListWidget->currentItem();
     if (!selectedItem) {
-        QMessageBox::warning(this, tr("Ошибка"), tr("Не выбран элемент в списке типов."));
+        QMessageBox::warning(this, tr("Error"), tr("Не выбран элемент в списке типов."));
         return;
     }
     QString typeValue = selectedItem->text();
@@ -484,7 +484,7 @@ void MainWindow::callPhpScript()
     QListWidgetItem *selectedName = ui->namesListWidget->currentItem();
 
     if (!selectedName) {
-        QMessageBox::warning(this, tr("Ошибка"), tr("Не выбрано имя объекта."));
+        QMessageBox::warning(this, tr("Error"), tr("Не выбрано имя объекта."));
         return;
     }
 
@@ -496,7 +496,7 @@ void MainWindow::callPhpScript()
     // 3. Получаем выбранный элемент из второго списка (например, cmdFilesListWidget)
     QListWidgetItem *selectedCmd = ui->cmdFilesListWidget->currentItem();
     if (!selectedCmd) {
-        QMessageBox::warning(this, tr("Ошибка"), tr("Не выбран .cmd файл."));
+        QMessageBox::warning(this, tr("Error"), tr("Не выбран .cmd файл."));
         return;
     }
 
@@ -505,7 +505,7 @@ void MainWindow::callPhpScript()
     // 4. Получаем значение из спинбокса
     int spinValue = ui->numSpinBox->value();
     if(!spinValue) {
-        QMessageBox::warning(this, tr("Ошибка"), tr("Номер не может быть 0"));
+        QMessageBox::warning(this, tr("Error"), tr("Номер не может быть 0"));
         return;
     }
 
@@ -527,7 +527,7 @@ void MainWindow::callPhpScript()
 
     QMessageBox::StandardButton reply = QMessageBox::question(
         this,
-        tr("Подтверждение запуска"),
+        tr("Run accepting"),
         message,
         QMessageBox::Yes | QMessageBox::No
         );
@@ -547,7 +547,7 @@ void MainWindow::callPhpScript()
 
     // Запускаем терминал отдельно (detached)
     if (!QProcess::startDetached(terminal, terminalArgs)) {
-        QMessageBox::critical(this, tr("Ошибка"), tr("Не удалось запустить терминал."));
+        QMessageBox::critical(this, tr("Error"), tr("Не удалось запустить терминал."));
     }
 
 }
