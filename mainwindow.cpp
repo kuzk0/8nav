@@ -8,6 +8,8 @@
 #include <QListWidgetItem>
 #include <QSettings>
 #include <QTextEdit>
+#include <QProcess>
+#include <QStandardPaths>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -23,9 +25,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_watcher,                  &QFileSystemWatcher::directoryChanged,  this,   &MainWindow::onDirectoryChanged);
 
     connect(ui->selectCsvButton,        &QPushButton::clicked,                  this,   &MainWindow::onSelectCsvFile);
+    connect(ui->selectPhpButton,        &QPushButton::clicked,                  this,   &MainWindow::onSelectPhpFile);
 
     connect(ui->typeListWidget,         &QListWidget::currentItemChanged,       this,   &MainWindow::onTypeCurrentItemChanged);
     connect(ui->cmdFilesListWidget,     &QListWidget::currentItemChanged,       this,   &MainWindow::onCmdCurrentItemChanged);
+    connect(ui->namesListWidget,        &QListWidget::currentItemChanged,       this,   &MainWindow::onNameCurrentItemChanged);
 
     ui->saveButton->setEnabled(false);
     connect(ui->saveButton,             &QPushButton::clicked,                  this,   &MainWindow::onSaveButtonClicked);
@@ -42,9 +46,9 @@ void MainWindow::onSelectCsvFile()
 {
     QString startDir = m_currentDirectory.isEmpty() ? QDir::currentPath() : m_currentDirectory;
     QString fileName = QFileDialog::getOpenFileName(this,
-                                                    tr("Выберите CSV-файл в KOI8-R"),
+                                                    tr("Choose CSV-file KOI8-R"),
                                                     startDir,
-                                                    tr("CSV файлы (*.csv *.CSV)"));
+                                                    tr("CSV files (*.csv *.CSV)"));
 
     if (fileName.isEmpty())
         return;
@@ -52,33 +56,53 @@ void MainWindow::onSelectCsvFile()
     m_currentCsvPath = fileName;
     m_currentDirectory = QFileInfo(fileName).absolutePath();
     ui->filePathLabel->setText(m_currentCsvPath);
-
+    findPhpScriptInDirectory();
     updateWatcherDir();
 
     saveLastDirectory();
     loadAndDisplayTypes(fileName);
 
-    // Очищаем список .cmd файлов, так как тип ещё не выбран
     ui->cmdFilesListWidget->clear();
+
+    ui->numSpinBox->setValue(0);
 }
+
+
+void MainWindow::onSelectPhpFile()
+{
+    QString startDir = m_currentDirectory.isEmpty() ? QDir::currentPath() : m_currentDirectory;
+    QString fileName = QFileDialog::getOpenFileName(this,
+                                                    tr("Choose PHP-file"),
+                                                    startDir,
+                                                    tr("PHP files (*.php *.PHP)"));
+
+    if (fileName.isEmpty())
+        return;
+
+    m_currentPhpScriptPath = fileName;
+    ui->phpPathLabel->setText(m_currentPhpScriptPath);
+
+
+}
+
 
 void MainWindow::loadAndDisplayTypes(const QString &csvFilePath)
 {
     ui->typeListWidget->clear();
     m_allTypes.clear();
     m_typeHasSubdir.clear();
+    m_csvRows.clear();
+    m_rowsByType.clear();
 
     QFile file(csvFilePath);
     if (!file.open(QIODevice::ReadOnly)) {
-        QMessageBox::warning(this,
-                             tr("Ошибка"),
-                             tr("Не удалось открыть файл:\n%1").arg(csvFilePath));
+        QMessageBox::warning(this, tr("Ошибка"), tr("Не удалось открыть файл:\n%1").arg(csvFilePath));
         return;
     }
 
     QTextCodec *codec = QTextCodec::codecForName("KOI8-R");
     if (!codec) {
-        QMessageBox::critical(this, tr("Ошибка"), tr("Кодировка KOI8-R не поддерживается."));
+        QMessageBox::critical(this, tr("Ошибка"), tr("Кодек KOI8-R не поддерживается."));
         file.close();
         return;
     }
@@ -88,11 +112,11 @@ void MainWindow::loadAndDisplayTypes(const QString &csvFilePath)
 
     QString decoded = codec->toUnicode(rawData);
     QStringList lines = decoded.split('\n', Qt::SkipEmptyParts);
+
     if (lines.isEmpty()) {
         ui->typeListWidget->addItem(tr("(файл пуст)"));
         return;
     }
-
 
     bool firstLine = true;
     for (const QString &line : lines) {
@@ -104,34 +128,39 @@ void MainWindow::loadAndDisplayTypes(const QString &csvFilePath)
         if (trimmed.isEmpty())
             continue;
 
-        // Первый столбец (разделитель ';')
-        QString type = trimmed.section(';', 0, 0);
-        if (type.startsWith('"') && type.endsWith('"'))
-            type = type.mid(1, type.length() - 2);
-        type = type.trimmed();
+        // Разделитель ';'
+        QStringList columns = trimmed.split(';');
+        if (columns.size() < 3) continue; // нужно минимум три столбца: TYPE;NAME;FULLNAME
 
-        if (!type.isEmpty())
-            m_allTypes.insert(type);
+        QString type = columns[0].trimmed();
+        QString name = columns[1].trimmed();
+        QString fullName = columns[2].trimmed();
+
+        if (type.isEmpty()) continue;
+
+        // Сохраняем строку для дальнейшего использования
+        CsvRow row{type, name, fullName};
+        m_csvRows.append(row);
+        m_rowsByType[type].append(row);
+        m_allTypes.insert(type);
     }
 
-
-    ui->typeListWidget->clear();
+    // Заполняем typeListWidget
     for (const QString &type : m_allTypes) {
         QListWidgetItem *item = new QListWidgetItem(type);
-        // Пока не знаем, есть ли поддиректория – установим временно
         item->setData(Qt::UserRole, type);
         ui->typeListWidget->addItem(item);
     }
 
-
     ui->typeListWidget->sortItems();
+    updateTypesActivity();   // проверка существования поддиректорий
 
-    updateTypesActivity();
-
-    statusBar()->showMessage(tr("Найдено %1 типов, из них активных: %2")
+    statusBar()->showMessage(tr("Найдено %1 типов (активных: %2), строк данных: %3")
                                  .arg(m_allTypes.size())
-                                 .arg(m_typeHasSubdir.values().count(true)));
+                                 .arg(m_typeHasSubdir.values().count(true))
+                                 .arg(m_csvRows.size()));
 }
+
 
 bool MainWindow::hasSubdirWithPrefix(const QString &typeValue) const
 {
@@ -147,6 +176,7 @@ bool MainWindow::hasSubdirWithPrefix(const QString &typeValue) const
     return false;
 }
 
+
 QStringList MainWindow::findSubdirsByTypePrefix(const QString &typeValue) const
 {
     QStringList result;
@@ -161,18 +191,50 @@ QStringList MainWindow::findSubdirsByTypePrefix(const QString &typeValue) const
     return result;
 }
 
+
+void MainWindow::findPhpScriptInDirectory()
+{
+    QDir dir(m_currentDirectory);
+    QStringList filters;
+    filters << "*.php" << "*.PHP";
+    QStringList phpFiles = dir.entryList(filters, QDir::Files);
+
+    if (phpFiles.isEmpty()) {
+        m_currentPhpScriptPath.clear();
+        statusBar()->showMessage(tr("В каталоге не найден .php файл для запуска скрипта"), 5000);
+        if (ui->saveButton)
+            ui->saveButton->setEnabled(false);
+    } else {
+        phpFiles.sort(); // сортируем для предсказуемого выбора первого
+        m_currentPhpScriptPath = dir.absoluteFilePath(phpFiles.first());
+        ui->phpPathLabel->setText(m_currentPhpScriptPath);
+        statusBar()->showMessage(tr("Найден PHP-скрипт: %1").arg(m_currentPhpScriptPath), 3000);
+        if (ui->saveButton)
+            ui->saveButton->setEnabled(true);
+    }
+}
+
+
 void MainWindow::onTypeCurrentItemChanged(QListWidgetItem *current, QListWidgetItem *previous)
 {
     Q_UNUSED(previous);
-    if (current && (current->flags() & Qt::ItemIsSelectable)) {
-        m_lastSelectedType = current->text();
-        refreshCmdListForType(m_lastSelectedType);
-    } else {
-        m_lastSelectedType.clear();
-        ui->cmdFilesListWidget->clear(); // очищаем список команд
+    if (!current) return;
+    if (!(current->flags() & Qt::ItemIsSelectable)) {
+        statusBar()->showMessage(tr("Тип '%1' недоступен (нет поддиректории).").arg(current->text()), 2000);
+        ui->namesListWidget->clear();
+        ui->cmdFilesListWidget->clear();
+        return;
     }
+
+    QString typeValue = current->text();
+    m_lastSelectedType = typeValue;
+
+    refreshNamesListForType(typeValue);   // новый список
+    refreshCmdListForType(typeValue);     // существующий список .cmd файлов
+
     updateSaveButtonState();
 }
+
 
 void MainWindow::refreshCmdListForType(const QString &typeValue)
 {
@@ -208,18 +270,28 @@ void MainWindow::refreshCmdListForType(const QString &typeValue)
     for (const auto &pair : cmdFiles) {
         QString subdir = pair.first;
         QString fileName = pair.second;
-        QString displayName = fileName;
-        if (displayName.endsWith(".cmd", Qt::CaseInsensitive))
-            displayName.chop(4); // убираем .cmd для отображения
         QString relativePath = subdir + "/"
                                + fileName; // полный путь относительно m_currentDirectory
 
-        QListWidgetItem *item = new QListWidgetItem(displayName);
+        QListWidgetItem *item = new QListWidgetItem(fileName);
         item->setData(Qt::UserRole, relativePath); // сохраняем "Type_something/script.cmd"
         ui->cmdFilesListWidget->addItem(item);
     }
 
     updateSaveButtonState();
+}
+
+
+void MainWindow::refreshNamesListForType(const QString &typeValue)
+{
+    ui->namesListWidget->clear();
+    QList<CsvRow> rows = m_rowsByType.value(typeValue);
+    for (const CsvRow &row : rows) {
+        QString displayText = QString("%1 (%2)").arg(row.name, row.fullName);
+        QListWidgetItem *item = new QListWidgetItem(displayText);
+        item->setData(Qt::UserRole, row.name);   // храним только "имя"
+        ui->namesListWidget->addItem(item);
+    }
 }
 
 
@@ -235,12 +307,24 @@ void MainWindow::onCmdCurrentItemChanged(QListWidgetItem *current, QListWidgetIt
     updateSaveButtonState();
 }
 
+void MainWindow::onNameCurrentItemChanged(QListWidgetItem *current, QListWidgetItem *previous)
+{
+    Q_UNUSED(previous);
+    if (current) {
+        // Сохраняем отображаемое имя без расширения
+        m_lastSelectedName = current->text();
+    } else {
+        m_lastSelectedName.clear();
+    }
+    updateSaveButtonState();
+}
+
 
 void MainWindow::onSaveButtonClicked()
 {
     saveLastDirectory();
-    showTxtFileContent();
-    statusBar()->showMessage(tr("Настройки сохранены"), 2000);
+    callPhpScript();
+    statusBar()->showMessage(tr("Вызов сценария %1").arg(m_currentPhpScriptPath), 2000);
 }
 
 
@@ -253,76 +337,11 @@ void MainWindow::updateSaveButtonState()
             typeSelected = true;
         }
     }
+
     bool cmdSelected = (ui->cmdFilesListWidget->currentItem() != nullptr);
-    ui->saveButton->setEnabled(typeSelected && cmdSelected);
-}
+    bool nameSelected = (ui->namesListWidget->currentItem() != nullptr);
 
-
-void MainWindow::showTxtFileContent()
-{
-    QListWidgetItem *cmdItem = ui->cmdFilesListWidget->currentItem();
-    if (!cmdItem) {
-        QMessageBox::warning(this, tr("Ошибка"), tr("Не выбран .cmd файл"));
-        return;
-    }
-
-    QString fullCmdName = cmdItem->data(Qt::UserRole).toString();
-    if (fullCmdName.isEmpty()) {
-        QMessageBox::warning(this, tr("Ошибка"), tr("Не удалось определить имя файла"));
-        return;
-    }
-
-    // Формируем имя .txt файла (заменяем расширение)
-    QString txtRelativePath = fullCmdName;
-    if (txtRelativePath.endsWith(".cmd", Qt::CaseInsensitive))
-        txtRelativePath.chop(4);
-    txtRelativePath += ".txt";
-
-    // Строим абсолютный путь с использованием QDir и разделителя
-    QDir baseDir(m_currentDirectory);
-    QString absoluteTxtPath = baseDir.filePath(txtRelativePath);
-    absoluteTxtPath = QDir::cleanPath(absoluteTxtPath); // убираем лишние . и ..
-    absoluteTxtPath = QDir::toNativeSeparators(absoluteTxtPath); // системный разделитель
-
-    QFile txtFile(absoluteTxtPath);
-    if (!txtFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, tr("Ошибка"),
-                             tr("Не удалось открыть файл:\n%1\nОшибка: %2")
-                                 .arg(absoluteTxtPath, txtFile.errorString()));
-        return;
-    }
-
-    QByteArray data = txtFile.readAll();
-    txtFile.close();
-
-    // Определение кодировки (UTF-8, затем KOI8-R)
-    QString text;
-    QTextCodec *codec = QTextCodec::codecForName("UTF-8");
-    text = codec->toUnicode(data);
-    if (text.contains(QChar::ReplacementCharacter)) {
-        codec = QTextCodec::codecForName("KOI8-R");
-        if (codec)
-            text = codec->toUnicode(data);
-        else
-            text = QString::fromUtf8(data);
-    }
-
-    // Диалог с текстом
-    QDialog dialog(this);
-    dialog.setWindowTitle(tr("Содержимое %1").arg(txtRelativePath));
-    QVBoxLayout *layout = new QVBoxLayout(&dialog);
-
-    QTextEdit *textEdit = new QTextEdit(&dialog);
-    textEdit->setPlainText(text);
-    textEdit->setReadOnly(true);
-    textEdit->setMinimumSize(600, 400);
-    layout->addWidget(textEdit);
-
-    QDialogButtonBox *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok);
-    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    layout->addWidget(buttonBox);
-
-    dialog.exec();
+    ui->saveButton->setEnabled(typeSelected && cmdSelected && nameSelected);
 }
 
 
@@ -332,8 +351,13 @@ void MainWindow::saveLastDirectory() const
     QSettings settings("8nav", "App");
     settings.setValue("lastDirectory", m_currentDirectory);
 
-    if (m_currentCsvPath.isEmpty()) return;
-    settings.setValue("lastCsvPath", m_currentCsvPath);
+    if (!m_currentCsvPath.isEmpty()) {
+        settings.setValue("lastCsvPath", m_currentCsvPath);
+    }
+
+    if (!m_currentPhpScriptPath.isEmpty()) {
+        settings.setValue("lastPhpScriptPath", m_currentPhpScriptPath);
+    }
 }
 
 
@@ -357,6 +381,16 @@ void MainWindow::loadLastDirectory()
         statusBar()->showMessage(tr("Последний рабочий файл: %1").arg(m_currentCsvPath), 3000);
     } else {
         m_currentCsvPath.clear();
+    }
+
+    m_currentPhpScriptPath = settings.value("lastPhpScriptPath").toString();
+    if (!m_currentPhpScriptPath.isEmpty() && QFileInfo(m_currentPhpScriptPath).exists()) {
+        ui->phpPathLabel->setText(m_currentPhpScriptPath);
+
+        statusBar()->showMessage(tr("Последний рабочий php - скрипт: %1").arg(m_currentPhpScriptPath), 3000);
+    } else {
+        m_currentPhpScriptPath.clear();
+        findPhpScriptInDirectory();
     }
 }
 
@@ -416,4 +450,104 @@ void MainWindow::updateWatcherDir(){
         else
             qDebug() << "Watching directory:" << m_currentDirectory;
     }
+}
+
+
+void MainWindow::callPhpScript()
+{
+
+    if (QStandardPaths::findExecutable("php").isEmpty()) {
+        QMessageBox::critical(this, tr("Ошибка"), tr("PHP не установлен или не найден в PATH."));
+        return;
+    }
+
+
+    QString terminal;
+
+    if (!QStandardPaths::findExecutable("xterm").isEmpty())
+        terminal = "xterm";
+    else {
+        QMessageBox::warning(this, tr("Ошибка"), tr("Не найден терминал (xterm)."));
+        return;
+    }
+
+
+    // 1. Получаем выбранный элемент из первого списка (например, typeListWidget)
+    QListWidgetItem *selectedItem = ui->typeListWidget->currentItem();
+    if (!selectedItem) {
+        QMessageBox::warning(this, tr("Ошибка"), tr("Не выбран элемент в списке типов."));
+        return;
+    }
+    QString typeValue = selectedItem->text();
+
+    // 2. Получаем выбранный элемент из второго списка (например, cmdFilesListWidget)
+    QListWidgetItem *selectedName = ui->namesListWidget->currentItem();
+
+    if (!selectedName) {
+        QMessageBox::warning(this, tr("Ошибка"), tr("Не выбрано имя объекта."));
+        return;
+    }
+
+    QString nameValue = selectedName->data(Qt::UserRole).toString();
+    if (nameValue.isEmpty())
+        nameValue = selectedName->text();  // fallback
+
+
+    // 3. Получаем выбранный элемент из второго списка (например, cmdFilesListWidget)
+    QListWidgetItem *selectedCmd = ui->cmdFilesListWidget->currentItem();
+    if (!selectedCmd) {
+        QMessageBox::warning(this, tr("Ошибка"), tr("Не выбран .cmd файл."));
+        return;
+    }
+
+    QString cmdValue = selectedCmd->text();
+
+    // 4. Получаем значение из спинбокса
+    int spinValue = ui->numSpinBox->value();
+    if(!spinValue) {
+        QMessageBox::warning(this, tr("Ошибка"), tr("Номер не может быть 0"));
+        return;
+    }
+
+    // 5. Формируем аргументы для PHP-скрипта
+    QStringList arguments;
+    arguments << nameValue;
+    arguments << typeValue;
+    arguments << cmdValue;
+    arguments << QString::number(spinValue);
+
+
+    QString message = tr("Запуск PHP-скрипта со следующими аргументами:\n\n"
+                         "Скрипт: %1\n"
+                         "Имя: %2\n"
+                         "Тип: %3\n"
+                         "Команда: %4\n"
+                         "Номер: %5\n\n"
+                         "Продолжить?").arg(m_currentPhpScriptPath, nameValue, typeValue, cmdValue).arg(spinValue);
+
+    QMessageBox::StandardButton reply = QMessageBox::question(
+        this,
+        tr("Подтверждение запуска"),
+        message,
+        QMessageBox::Yes | QMessageBox::No
+        );
+
+    if (reply != QMessageBox::Yes) {
+        statusBar()->showMessage(tr("Запуск скрипта отменён"), 3000);
+        return;
+    }
+
+    QString phpCmd = QString("php \"%1\" %2")
+                         .arg(m_currentPhpScriptPath)
+                         .arg(arguments.join(' '));
+
+
+    QStringList terminalArgs;
+    terminalArgs << "-e" << "bash" << "-c" << phpCmd + "; exec bash";
+
+    // Запускаем терминал отдельно (detached)
+    if (!QProcess::startDetached(terminal, terminalArgs)) {
+        QMessageBox::critical(this, tr("Ошибка"), tr("Не удалось запустить терминал."));
+    }
+
 }
